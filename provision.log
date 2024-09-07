@@ -1,0 +1,189 @@
+
+# установка утилит для работы с SELinux
+dnf install --quiet --assumeyes setools-console setroubleshoot-server
+
+Installed:
+  checkpolicy-3.6-1.el9.x86_64
+  policycoreutils-python-utils-3.6-2.1.el9.noarch
+  polkit-0.117-11.el9.x86_64
+  polkit-pkla-compat-0.1-21.el9.x86_64
+  python3-audit-3.1.2-2.el9.x86_64
+  python3-dasbus-1.4-5.el9.noarch
+  python3-distro-1.5.0-7.el9.noarch
+  python3-libsemanage-3.6-1.el9.x86_64
+  python3-libxml2-2.9.13-6.el9_4.x86_64
+  python3-policycoreutils-3.6-2.1.el9.noarch
+  python3-setools-4.4.4-1.el9.x86_64
+  python3-setuptools-53.0.0-12.el9_4.1.noarch
+  setools-console-4.4.4-1.el9.x86_64
+  setroubleshoot-plugins-3.3.14-4.el9.noarch
+  setroubleshoot-server-3.3.32-1.el9.x86_64
+
+
+# установка и настройка nginx:
+dnf install --quiet --assumeyes nginx
+
+Installed:
+  almalinux-logos-httpd-90.5.1-1.1.el9.noarch
+  nginx-1:1.20.1-16.el9_4.1.x86_64
+  nginx-core-1:1.20.1-16.el9_4.1.x86_64
+  nginx-filesystem-1:1.20.1-16.el9_4.1.noarch
+
+sed '/\blisten\b/ s/\b80;/4881;/' -i /etc/nginx/nginx.conf
+systemctl enable nginx.service
+Created symlink /etc/systemd/system/multi-user.target.wants/nginx.service → /usr/lib/systemd/system/nginx.service.
+systemctl start nginx.service
+Job for nginx.service failed because the control process exited with error code.
+See "systemctl status nginx.service" and "journalctl -xeu nginx.service" for details.
+
+# получаем ошибку запуска nginx из его лога:
+cat /var/log/nginx/error.log
+2024/09/07 13:44:45 [emerg] 4643#4643: bind() to 0.0.0.0:4881 failed (13: Permission denied)
+
+# расшифровываем Access Vector Cache событие аудита SELinux:
+sealert --analyze /var/log/audit/audit.log
+
+found 1 alerts in /var/log/audit/audit.log
+--------------------------------------------------------------------------------
+
+SELinux is preventing /usr/sbin/nginx from name_bind access on the tcp_socket port 4881.
+
+*****  Plugin bind_ports (92.2 confidence) suggests   ************************
+
+If you want to allow /usr/sbin/nginx to bind to network port 4881
+Then you need to modify the port type.
+Do
+# semanage port -a -t PORT_TYPE -p tcp 4881
+    where PORT_TYPE is one of the following: http_cache_port_t, http_port_t, jboss_management_port_t, jboss_messaging_port_t, ntop_port_t, puppet_port_t.
+
+*****  Plugin catchall_boolean (7.83 confidence) suggests   ******************
+
+If you want to allow nis to enabled
+Then you must tell SELinux about this by enabling the 'nis_enabled' boolean.
+
+Do
+setsebool -P nis_enabled 1
+
+*****  Plugin catchall (1.41 confidence) suggests   **************************
+
+If you believe that nginx should be allowed name_bind access on the port 4881 tcp_socket by default.
+Then you should report this as a bug.
+You can generate a local policy module to allow this access.
+Do
+allow this access for now by executing:
+# ausearch -c 'nginx' --raw | audit2allow -M my-nginx
+# semodule -X 300 -i my-nginx.pp
+
+
+Additional Information:
+Source Context                system_u:system_r:httpd_t:s0
+Target Context                system_u:object_r:unreserved_port_t:s0
+Target Objects                port 4881 [ tcp_socket ]
+Source                        nginx
+Source Path                   /usr/sbin/nginx
+Port                          4881
+Host                          <Unknown>
+Source RPM Packages           nginx-core-1.20.1-16.el9_4.1.x86_64
+Target RPM Packages
+SELinux Policy RPM            selinux-policy-targeted-38.1.35-2.el9_4.2.noarch
+Local Policy RPM              selinux-policy-targeted-38.1.35-2.el9_4.2.noarch
+Selinux Enabled               True
+Policy Type                   targeted
+Enforcing Mode                Enforcing
+Host Name                     selinux.internal
+Platform                      Linux selinux.internal
+                              5.14.0-427.28.1.el9_4.x86_64 #1 SMP
+                              PREEMPT_DYNAMIC Fri Aug 2 03:44:10 EDT 2024 x86_64
+                              x86_64
+Alert Count                   1
+First Seen                    2024-09-07 13:44:45 UTC
+Last Seen                     2024-09-07 13:44:45 UTC
+Local ID                      5da29ff8-380c-46cf-8190-affd6cfc86f6
+
+Raw Audit Messages
+type=AVC msg=audit(1725716685.969:782): avc:  denied  { name_bind } for  pid=4643 comm="nginx" src=4881 scontext=system_u:system_r:httpd_t:s0 tcontext=system_u:object_r:unreserved_port_t:s0 tclass=tcp_socket permissive=0
+
+
+type=SYSCALL msg=audit(1725716685.969:782): arch=x86_64 syscall=bind success=no exit=EACCES a0=6 a1=55b8a5e6a6c0 a2=10 a3=7ffd944a8690 items=0 ppid=1 pid=4643 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm=nginx exe=/usr/sbin/nginx subj=system_u:system_r:httpd_t:s0 key=(null)ARCH=x86_64 SYSCALL=bind AUID=unset UID=root GID=root EUID=root SUID=root FSUID=root EGID=root SGID=root FSGID=root
+
+Hash: nginx,httpd_t,unreserved_port_t,tcp_socket,name_bind
+
+
+# из ошибки видно, что домену httpd_t запрещена операция name_bind на порту 4881
+# класса tcp_socket, поищем похожие правила с помощью sesearch:
+seinfo --portcon=4881
+
+Portcon: 3
+   portcon sctp 1024-65535 system_u:object_r:unreserved_port_t:s0
+   portcon tcp 1024-32767 system_u:object_r:unreserved_port_t:s0
+   portcon udp 1024-32767 system_u:object_r:unreserved_port_t:s0
+sesearch --allow --source httpd_t --class tcp_socket --perms name_bind
+allow httpd_t commplex_main_port_t:tcp_socket name_bind; [ httpd_use_openstack ]:True
+allow httpd_t ephemeral_port_type:tcp_socket name_bind; [ httpd_enable_ftp_server ]:True
+allow httpd_t ftp_port_t:tcp_socket name_bind; [ httpd_enable_ftp_server ]:True
+allow httpd_t http_cache_port_t:tcp_socket name_bind;
+allow httpd_t http_port_t:tcp_socket name_bind;
+allow httpd_t jboss_management_port_t:tcp_socket name_bind;
+allow httpd_t jboss_messaging_port_t:tcp_socket name_bind;
+allow httpd_t ntop_port_t:tcp_socket name_bind;
+allow httpd_t preupgrade_port_t:tcp_socket name_bind; [ httpd_run_preupgrade ]:True
+allow httpd_t puppet_port_t:tcp_socket name_bind;
+allow nsswitch_domain ephemeral_port_t:tcp_socket name_bind; [ nis_enabled ]:True
+allow nsswitch_domain port_t:tcp_socket name_bind; [ nis_enabled ]:True
+allow nsswitch_domain unreserved_port_t:tcp_socket name_bind; [ nis_enabled ]:True
+sesearch --allow --source httpd_t --class tcp_socket \
+  --target unreserved_port_t --perms name_bind
+allow nsswitch_domain unreserved_port_t:tcp_socket name_bind; [ nis_enabled ]:True
+
+# порт 4881 присутствует только в unreserved_port_t и его нет в политиках,
+# которые разрешают операцию name_bind за исключением выключенной политики:
+# allow nsswitch_domain unreserved_port_t:tcp_socket name_bind;
+# [ nis_enabled ]:True
+
+# включим политику nis_enabled и попробуем запустить nginx
+setsebool -P nis_enabled=true
+systemctl start nginx
+
+# отключим политику nis_enabled и перезапустим nginx
+setsebool -P nis_enabled=false
+systemctl restart nginx
+Job for nginx.service failed because the control process exited with error code.
+See "systemctl status nginx.service" and "journalctl -xeu nginx.service" for details.
+
+# добавим порт 4881 в тип http_port_t и запустим nginx:
+semanage port --list | grep '^http_port_t\b'
+http_port_t                    tcp      80, 81, 443, 488, 8008, 8009, 8443, 9000
+semanage port --add --type http_port_t --proto tcp 4881
+semanage port --list | grep '^http_port_t\b'
+http_port_t                    tcp      4881, 80, 81, 443, 488, 8008, 8009, 8443, 9000
+systemctl start nginx
+
+# удалим порт 4881 из типа http_port_t и перезапустим nginx:
+semanage port --delete --type http_port_t --proto tcp 4881
+systemctl restart nginx
+Job for nginx.service failed because the control process exited with error code.
+See "systemctl status nginx.service" and "journalctl -xeu nginx.service" for details.
+
+# сгенерируем и запустим модуль, разрешающий работу nginx:
+ausearch --input-logs --comm nginx --raw \
+  | audit2allow --module-package my-nginx
+******************** IMPORTANT ***********************
+To make this policy package active, execute:
+
+semodule -i my-nginx.pp
+
+semodule --priority="300" --install="my-nginx.pp"
+semodule --list=full | grep my-nginx
+300 my-nginx          pp
+systemctl start nginx
+
+# удалим модуль и перезапустим nginx:
+semodule --priority="300" --remove="my-nginx"
+libsemanage.semanage_direct_remove_key: Removing last my-nginx module (no other my-nginx module exists at another priority).
+systemctl restart nginx
+Job for nginx.service failed because the control process exited with error code.
+See "systemctl status nginx.service" and "journalctl -xeu nginx.service" for details.
+
+# добавим порт 4881 в тип http_port_t и запустим nginx:
+semanage port --add --type http_port_t --proto tcp 4881
+systemctl start nginx
